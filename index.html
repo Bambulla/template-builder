@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Template Builder</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha512-GsLlZN/3F2ErC5M4fQ4f0kM7H2PzefRg2fzGEylh4G6dkprdFM5lTyBC0bY4Z1cdq9VHtV6nRvWmvMRdI9l8eg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <style>
+    :root {
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: #1f2937;
+      background: #f3f4f6;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 320px) 1fr;
+      min-height: 100vh;
+    }
+
+    .panel {
+      background: #111827;
+      color: #f9fafb;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel h1 {
+      margin: 0;
+      font-size: 1.2rem;
+    }
+
+    .panel p {
+      margin: 0;
+      color: #d1d5db;
+      line-height: 1.4;
+      font-size: 0.92rem;
+    }
+
+    .panel code {
+      color: #fca5a5;
+      font-size: 0.85rem;
+      background: #1f2937;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    .panel input[type="file"] {
+      color: #f9fafb;
+    }
+
+    .panel button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+    }
+
+    .panel button[disabled] {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    .status {
+      font-size: 0.9rem;
+      color: #fde68a;
+      min-height: 1.2em;
+    }
+
+    .preview-wrap {
+      padding: 24px;
+      overflow: auto;
+    }
+
+    .preview-card {
+      max-width: 980px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 14px;
+      border: 1px solid #d1d5db;
+      min-height: 80vh;
+      overflow: hidden;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+    }
+
+    iframe {
+      width: 100%;
+      min-height: 80vh;
+      border: 0;
+      background: #fff;
+    }
+
+    #pdf-stage {
+      position: fixed;
+      top: -99999px;
+      left: -99999px;
+      width: 794px;
+      background: #fff;
+      z-index: -1;
+    }
+
+    @media (max-width: 920px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="panel">
+    <h1>HTML → PDF шаблонизатор</h1>
+    <p>Загрузите HTML-файл с плейсхолдерами. Элемент с атрибутом <code>data-tb-field</code> будет заменён на поле ввода.</p>
+    <p>Опционально можно указать:
+      <br><code>data-tb-type="text|number|date|select"</code>
+      <br><code>data-tb-options="Вариант 1,Вариант 2"</code> (для select)
+      <br><code>data-tb-placeholder="Подсказка"</code>
+    </p>
+    <input id="template-file" type="file" accept=".html,text/html" />
+    <button id="render-btn" disabled>Рендер и скачать PDF</button>
+    <div class="status" id="status"></div>
+  </aside>
+
+  <main class="preview-wrap">
+    <div class="preview-card">
+      <iframe id="preview" title="Предпросмотр шаблона"></iframe>
+    </div>
+  </main>
+</div>
+
+<div id="pdf-stage" aria-hidden="true"></div>
+
+<script>
+  const fileInput = document.getElementById('template-file');
+  const renderBtn = document.getElementById('render-btn');
+  const statusEl = document.getElementById('status');
+  const previewFrame = document.getElementById('preview');
+  const pdfStage = document.getElementById('pdf-stage');
+
+  let transformedDoc = null;
+
+  function setStatus(message, isError = false) {
+    statusEl.textContent = message;
+    statusEl.style.color = isError ? '#fca5a5' : '#fde68a';
+  }
+
+  function buildControl(fieldNode) {
+    const name = fieldNode.getAttribute('data-tb-field') || 'field';
+    const type = (fieldNode.getAttribute('data-tb-type') || 'text').toLowerCase();
+    const placeholder = fieldNode.getAttribute('data-tb-placeholder') || '';
+
+    let control;
+    if (type === 'select') {
+      control = document.createElement('select');
+      const options = (fieldNode.getAttribute('data-tb-options') || '')
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = placeholder || 'Выберите значение';
+      control.append(empty);
+
+      options.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        control.append(option);
+      });
+    } else {
+      control = document.createElement('input');
+      control.type = ['number', 'date', 'text'].includes(type) ? type : 'text';
+      control.placeholder = placeholder;
+    }
+
+    control.setAttribute('data-tb-field', name);
+    control.className = 'tb-field-control';
+    control.style.minWidth = fieldNode.getAttribute('data-tb-width') || '160px';
+    control.style.padding = '2px 4px';
+    control.style.border = '1px solid #2563eb';
+    control.style.borderRadius = '4px';
+    control.style.font = 'inherit';
+
+    return control;
+  }
+
+  function transformTemplate(htmlText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlText, 'text/html');
+
+    const placeholders = Array.from(doc.querySelectorAll('[data-tb-field]'));
+    placeholders.forEach((node) => {
+      const control = buildControl(node);
+      node.replaceWith(control);
+    });
+
+    const style = doc.createElement('style');
+    style.textContent = `
+      body { margin: 24px; }
+      .tb-field-control { background: #eff6ff; }
+    `;
+    doc.head.append(style);
+
+    return { doc, fieldCount: placeholders.length };
+  }
+
+  function loadPreview(doc) {
+    previewFrame.srcdoc = '<!doctype html>\n' + doc.documentElement.outerHTML;
+  }
+
+  function preparePdfContent() {
+    const sourceDoc = previewFrame.contentDocument;
+    if (!sourceDoc) {
+      throw new Error('Предпросмотр ещё не загружен.');
+    }
+
+    const pdfDoc = document.implementation.createHTMLDocument('pdf');
+
+    sourceDoc.querySelectorAll('style,link[rel="stylesheet"]').forEach((node) => {
+      pdfDoc.head.append(node.cloneNode(true));
+    });
+
+    pdfDoc.body.innerHTML = sourceDoc.body.innerHTML;
+
+    pdfDoc.querySelectorAll('input.tb-field-control, select.tb-field-control').forEach((control) => {
+      const value = (control.value || '').trim() || ' '; 
+      const replacement = pdfDoc.createElement('span');
+      replacement.textContent = value;
+      replacement.style.display = 'inline-block';
+      replacement.style.minWidth = control.style.minWidth || '100px';
+      replacement.style.borderBottom = '1px solid #6b7280';
+      replacement.style.padding = '1px 2px';
+      control.replaceWith(replacement);
+    });
+
+    return pdfDoc;
+  }
+
+  async function handleRender() {
+    try {
+      renderBtn.disabled = true;
+      setStatus('Готовим PDF...');
+
+      const pdfDoc = preparePdfContent();
+      pdfStage.innerHTML = '';
+
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = pdfDoc.body.innerHTML;
+
+      pdfDoc.head.querySelectorAll('style').forEach((styleNode) => {
+        wrapper.prepend(styleNode.cloneNode(true));
+      });
+
+      pdfStage.append(wrapper);
+
+      await html2pdf().set({
+        margin: 10,
+        filename: 'filled-template.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      }).from(wrapper).save();
+
+      setStatus('PDF успешно скачан.');
+    } catch (error) {
+      console.error(error);
+      setStatus('Ошибка при генерации PDF: ' + error.message, true);
+    } finally {
+      renderBtn.disabled = false;
+    }
+  }
+
+  fileInput.addEventListener('change', async (event) => {
+    const [file] = event.target.files;
+    if (!file) {
+      transformedDoc = null;
+      renderBtn.disabled = true;
+      setStatus('');
+      return;
+    }
+
+    try {
+      const htmlText = await file.text();
+      const { doc, fieldCount } = transformTemplate(htmlText);
+      transformedDoc = doc;
+      loadPreview(transformedDoc);
+
+      const count = fieldCount;
+      renderBtn.disabled = false;
+      setStatus(`Шаблон загружен. Полей: ${count}.`);
+    } catch (error) {
+      transformedDoc = null;
+      renderBtn.disabled = true;
+      setStatus('Не удалось загрузить шаблон: ' + error.message, true);
+    }
+  });
+
+  renderBtn.addEventListener('click', handleRender);
+</script>
+</body>
+</html>
